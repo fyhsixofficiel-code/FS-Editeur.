@@ -1,0 +1,138 @@
+# Publie une nouvelle version : FS-Editeur-Setup.exe (Windows), FS-Editeur.apk (Android) et la PWA (GitHub Pages).
+# Lancement : onglet « Actions » → « 2 · Publier une version » → « Run workflow » → saisir le numéro (ex. 0.1.1).
+name: "2 · Publier une version"
+on:
+  workflow_dispatch:
+    inputs:
+      version: { description: "Numéro de version (ex. 0.1.1) — doit être supérieur au précédent", required: true, default: "0.1.0" }
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+env:
+  VERSION: ${{ inputs.version }}
+jobs:
+  web:
+    name: Version web (PWA) + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install --no-audit --no-fund
+      - run: node scripts/stamp-version.mjs "$VERSION"
+      - run: npm test
+      - run: node scripts/fetch-fonts.mjs
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with: { name: web, path: dist }
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: dist }
+
+  pages:
+    name: Mise en ligne de la PWA (GitHub Pages)
+    needs: web
+    runs-on: ubuntu-latest
+    continue-on-error: true   # facultatif : activez Pages (Settings → Pages → Source : GitHub Actions)
+    environment: { name: github-pages, url: "${{ steps.deploy.outputs.page_url }}" }
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  windows:
+    name: Windows — FS-Editeur-Setup.exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install --no-audit --no-fund
+      - run: node scripts/stamp-version.mjs "${{ env.VERSION }}"
+      - run: node scripts/fetch-fonts.mjs
+      - run: npm run build
+      - run: node scripts/make-ico.mjs
+      - name: Construire l'installeur
+        run: npx electron-builder --win --config electron-builder.config.cjs --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            release/FS-Editeur-Setup.exe
+            release/FS-Editeur-Setup.exe.blockmap
+            release/latest.yml
+
+  android:
+    name: Android — FS-Editeur.apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - uses: android-actions/setup-android@v3
+      - run: npm install --no-audit --no-fund
+      - run: node scripts/stamp-version.mjs "$VERSION"
+      - run: node scripts/fetch-fonts.mjs
+      - run: npm run build
+      - name: Créer et configurer le projet Android
+        run: |
+          npx cap add android
+          npx cap sync android
+          node scripts/android-setup.mjs
+      - name: Compiler et signer l'APK
+        env:
+          KEY_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          FS_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          cd android && chmod +x gradlew
+          if [ -n "$KEY_B64" ] && [ -n "$FS_KEYSTORE_PASSWORD" ]; then
+            echo "$KEY_B64" | base64 -d > "$RUNNER_TEMP/fseditor.keystore"
+            export FS_KEYSTORE="$RUNNER_TEMP/fseditor.keystore"
+            ./gradlew assembleRelease --no-daemon
+            cp app/build/outputs/apk/release/app-release.apk ../FS-Editeur.apk
+            echo "SIGNED=1" >> $GITHUB_ENV
+          else
+            echo "::warning::Clé Android absente : APK de TEST (signature temporaire). Les mises à jour exigeront de désinstaller. Suivez l'étape 3 du guide."
+            ./gradlew assembleDebug --no-daemon
+            cp app/build/outputs/apk/debug/app-debug.apk ../FS-Editeur.apk
+            echo "SIGNED=0" >> $GITHUB_ENV
+          fi
+      - name: Vérifier l'APK
+        run: |
+          ls -la FS-Editeur.apk
+          $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)/apksigner verify --print-certs FS-Editeur.apk | head -5
+      - uses: actions/upload-artifact@v4
+        with: { name: android, path: FS-Editeur.apk }
+
+  release:
+    name: Publication GitHub Release
+    needs: [web, windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: out }
+      - name: Préparer les fichiers
+        run: |
+          cd out && (cd web && zip -qr ../FS-Editeur-web.zip .) && ls -R
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: FS Editeur ${{ env.VERSION }}
+          make_latest: true
+          body: |
+            ## FS Editeur ${{ env.VERSION }}
+            **Windows 10/11** : téléchargez `FS-Editeur-Setup.exe`, ouvrez-le et suivez l'installation (raccourcis Bureau et menu Démarrer créés). Les versions suivantes s'installent automatiquement.
+            **Android 8+** : téléchargez `FS-Editeur.apk` sur le téléphone et ouvrez-le (autorisez « installer des applications inconnues » pour votre navigateur ou gestionnaire de fichiers).
+            **Web** : version installable depuis le navigateur (GitHub Pages) ; `FS-Editeur-web.zip` pour un hébergement personnel.
+            Vos projets sont conservés lors des mises à jour.
+          files: |
+            out/windows/FS-Editeur-Setup.exe
+            out/windows/FS-Editeur-Setup.exe.blockmap
+            out/windows/latest.yml
+            out/android/FS-Editeur.apk
+            out/FS-Editeur-web.zip

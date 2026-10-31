@@ -1,0 +1,12 @@
+{
+  "appId": "com.fseditor.app",
+  "appName": "FS Editeur",
+  "webDir": "dist",
+  "server": { "androidScheme": "https" },
+  "android": {
+    "backgroundColor": "#08080a",
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  }
+}

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+tests/e2e/out/
+tests/e2e/media/
+.env*
+*.log
+.DS_Store
+# Généré par les builds natifs
+release/
+android/
+ios/
+public/fonts/
+*.keystore
+*.jks
+ANDROID_KEYSTORE_BASE64.txt
